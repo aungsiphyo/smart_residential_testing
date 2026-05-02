@@ -13,7 +13,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 const PORT = 3000;
 
-// ================= MQTT CONNECTION =================
+// ================= MQTT CONNECTION (HiveMQ) =================
 const client = mqtt.connect(
   "mqtts://c7e8cba740bd45a0b79454529cda6758.s1.eu.hivemq.cloud:8883",
   {
@@ -24,38 +24,47 @@ const client = mqtt.connect(
 );
 
 client.on("connect", () => {
-  console.log("✅ MQTT Connected");
+  console.log("✅ Connected to HiveMQ Cloud");
   client.subscribe("sos/alert");
-  client.subscribe("carparking/status"); // Subscribed to updated topic
+  client.subscribe("parking/status"); // Matches your latest ESP32 code
 });
 
 client.on("message", (topic, message) => {
   try {
-    const data = JSON.parse(message.toString());
+    const rawData = JSON.parse(message.toString());
 
     if (topic === "sos/alert") {
-      console.log("🚨 SOS Received:", data);
-      io.emit("sos_alert", data);
+      console.log("🚨 SOS Alert:", rawData);
+      io.emit("sos_alert", rawData);
     } 
     
-    if (topic === "carparking/status") {
-      console.log("🚗 Parking Update:", data);
-      // Sends { total_available, left_available, right_available }
-      io.emit("parking_update", data);
-    }
+    if (topic === "parking/status") {
+      console.log("🚗 ESP32 Update:", rawData);
 
+      // TRANSLATION: Map {left, right} to what the React UI needs
+      const dashboardUpdate = {
+        total_available: (rawData.left || 0) + (rawData.right || 0),
+        left_available: rawData.left || 0,
+        right_available: rawData.right || 0
+      };
+
+      io.emit("parking_update", dashboardUpdate);
+    }
   } catch (e) {
-    console.log("Invalid message received");
+    console.log("❌ Error parsing message:", e.message);
   }
 });
 
+// ================= SOCKET.IO CLIENT LOGIC =================
 io.on("connection", (socket) => {
-  console.log("🟢 Admin Connected");
+  console.log("🟢 Admin Dashboard Connected");
+
   socket.on("sos_control", (data) => {
+    // Send control commands back to ESP32 if needed
     client.publish("sos/control", JSON.stringify(data));
   });
 });
 
 server.listen(PORT, () => {
-  console.log("🚀 Server running on http://localhost:" + PORT);
+  console.log(`🚀 System running at http://localhost:${PORT}`);
 });
