@@ -1,0 +1,163 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+// ================= WIFI & MQTT =================
+const char* ssid = "Redmi Note 13 Pro";
+const char* password = "11111111";
+
+const char* mqtt_server = "c7e8cba740bd45a0b79454529cda6758.s1.eu.hivemq.cloud";
+const int mqtt_port = 8883;
+const char* mqtt_user = "smartSOS";
+const char* mqtt_pass = "Password123";
+
+// ================= TOPICS =================
+const char* topic_parking = "carparking/status";
+const char* topic_alert   = "sos/alert";
+
+// ================= PINS =================
+#define BUTTON_PIN 13
+#define BUZZER_PIN 12
+#define IR_ENTRANCE 14
+#define IR_EXIT 27
+#define IR_LEFT_SEC 26
+#define IR_RIGHT_SEC 25
+
+// ================= VARIABLES =================
+int left_slots = 25;
+int right_slots = 25;
+
+bool sosSent = false;
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+// ================= WIFI =================
+void setup_wifi() {
+  Serial.print("Connecting WiFi");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(400);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi Connected ✅");
+}
+
+// ================= MQTT RECONNECT =================
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Connecting MQTT...");
+
+    if (client.connect("esp32_parking_master", mqtt_user, mqtt_pass)) {
+      Serial.println("Connected ✅");
+    } else {
+      Serial.println("Failed, retrying...");
+      delay(2000);
+    }
+  }
+}
+
+// ================= SEND STATUS =================
+void publishStatus() {
+  StaticJsonDocument<256> doc;
+
+  doc["total_available"] = left_slots + right_slots;
+  doc["left_available"]  = left_slots;
+  doc["right_available"] = right_slots;
+
+  char buffer[256];
+  serializeJson(doc, buffer);
+
+  client.publish(topic_parking, buffer);
+  Serial.println("Status sent: " + String(buffer));
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  pinMode(IR_ENTRANCE, INPUT);
+  pinMode(IR_EXIT, INPUT);
+  pinMode(IR_LEFT_SEC, INPUT);
+  pinMode(IR_RIGHT_SEC, INPUT);
+
+  setup_wifi();
+
+  espClient.setInsecure();
+  client.setServer(mqtt_server, mqtt_port);
+
+  reconnect();        // 🔥 FIX: MQTT connect first
+  publishStatus();
+}
+
+// ================= LOOP =================
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  // ================= SOS BUTTON =================
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    digitalWrite(BUZZER_PIN, HIGH);
+
+    if (!sosSent) {
+      client.publish(topic_alert, "{\"status\":\"SOS_ACTIVE\"}");
+      Serial.println("SOS SENT 🚨");
+      sosSent = true;
+    }
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+    sosSent = false;
+  }
+
+  // ================= IR ENTRANCE =================
+  if (digitalRead(IR_ENTRANCE) == LOW) {
+    delay(300); // debounce
+
+    unsigned long start = millis();
+    while (millis() - start < 3000) {
+
+      if (digitalRead(IR_LEFT_SEC) == LOW && left_slots > 0) {
+        left_slots--;
+        publishStatus();
+        break;
+      }
+
+      if (digitalRead(IR_RIGHT_SEC) == LOW && right_slots > 0) {
+        right_slots--;
+        publishStatus();
+        break;
+      }
+    }
+
+    while (digitalRead(IR_ENTRANCE) == LOW); // wait release (safe)
+  }
+
+  // ================= IR EXIT =================
+  if (digitalRead(IR_EXIT) == LOW) {
+    delay(300);
+
+    unsigned long start = millis();
+    while (millis() - start < 3000) {
+
+      if (digitalRead(IR_LEFT_SEC) == LOW && left_slots < 25) {
+        left_slots++;
+        publishStatus();
+        break;
+      }
+
+      if (digitalRead(IR_RIGHT_SEC) == LOW && right_slots < 25) {
+        right_slots++;
+        publishStatus();
+        break;
+      }
+    }
+
+    while (digitalRead(IR_EXIT) == LOW);
+  }
+}
